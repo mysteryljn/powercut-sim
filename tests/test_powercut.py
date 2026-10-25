@@ -18,6 +18,19 @@ class PowerCutTests(unittest.TestCase):
         self.assertIsNone(recovery["staged"])
         self.assertTrue(recovery["consistent"])
 
+    def test_recovery_finishes_commit_before_activation(self):
+        # This is the durable state left by a power loss between writing the
+        # commit marker and switching the active version pointer.
+        store = UpdateStore()
+        store.staged = "v2"
+        store.journal = ["stage", "write:0", "commit"]
+
+        recovery = store.recover()
+
+        self.assertEqual(recovery["active"], "v2")
+        self.assertIsNone(recovery["staged"])
+        self.assertTrue(recovery["consistent"])
+
     def test_invalid_power_cut_point_is_rejected(self):
         with self.assertRaises(ValueError):
             simulate(4, cut_after=0)
@@ -27,4 +40,18 @@ class PowerCutTests(unittest.TestCase):
     def test_empty_update_is_rejected(self):
         with self.assertRaises(ValueError):
             simulate(0)
+
+    def test_repeated_updates_advance_version(self):
+        store = UpdateStore()
+        self.assertEqual(store.update(2)["active"], "v2")
+        self.assertEqual(store.update(2)["active"], "v3")
+
+    def test_target_version_can_be_selected(self):
+        store = UpdateStore()
+        result = store.update(1, target_version="release-2026.10")
+        self.assertEqual(result["active"], "release-2026.10")
+
+    def test_target_version_cannot_match_active(self):
+        with self.assertRaises(ValueError):
+            simulate(1, target_version="v1")
 if __name__=="__main__": unittest.main()
