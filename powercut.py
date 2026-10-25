@@ -5,6 +5,13 @@ class UpdateStore:
     def __init__(self):
         self.active="v1"; self.staged=None; self.journal=[]
     def update(self,chunks,cut_after=None):
+        if not isinstance(chunks, int) or isinstance(chunks, bool) or chunks < 1:
+            raise ValueError("chunks must be a positive integer")
+        if cut_after is not None and (
+            not isinstance(cut_after, int) or isinstance(cut_after, bool)
+            or not 1 <= cut_after <= chunks
+        ):
+            raise ValueError("cut_after must be within chunks")
         self.staged="v2"; self.journal.append("stage")
         for index in range(chunks):
             self.journal.append("write:%d"%index)
@@ -13,8 +20,16 @@ class UpdateStore:
         self.journal.append("commit"); self.active=self.staged; self.staged=None
         return {"power_cut":False,"active":self.active,"journal":list(self.journal)}
     def recover(self):
-        if "commit" not in self.journal: self.staged=None
-        return {"active":self.active,"staged":self.staged,"consistent":self.staged is None or "commit" in self.journal}
+        # A commit from an earlier update must not make a later, interrupted
+        # transaction look committed.  Only a commit after the most recent
+        # stage belongs to the currently recoverable transaction.
+        last_stage = next((index for index in range(len(self.journal) - 1, -1, -1)
+                           if self.journal[index] == "stage"), None)
+        committed = last_stage is None or any(
+            entry == "commit" for entry in self.journal[last_stage + 1:]
+        )
+        if not committed: self.staged=None
+        return {"active":self.active,"staged":self.staged,"consistent":self.staged is None or committed}
 def simulate(chunks,cut_after=None):
     store=UpdateStore(); result=store.update(chunks,cut_after)
     result["recovery"]=store.recover(); return result
