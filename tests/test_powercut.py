@@ -1,5 +1,7 @@
+import contextlib
+import io
 import unittest
-from powercut import MAX_CHUNKS, UpdateStore, simulate
+from powercut import MAX_CHUNKS, UpdateStore, main, simulate
 class PowerCutTests(unittest.TestCase):
     def test_cut_keeps_previous_active(self):
         result=simulate(4,2)
@@ -72,4 +74,19 @@ class PowerCutTests(unittest.TestCase):
     def test_target_version_cannot_match_active(self):
         with self.assertRaises(ValueError):
             simulate(1, target_version="v1")
+
+    def test_target_version_cannot_reuse_committed_release(self):
+        store = UpdateStore()
+        self.assertEqual(store.update(1)["active"], "v2")
+        self.assertEqual(store.update(1)["active"], "v3")
+        with self.assertRaisesRegex(ValueError, "already committed"):
+            store.update(1, target_version="v2")
+
+    def test_cli_reports_invalid_target_version_without_traceback(self):
+        for target in ("v1", "   "):
+            output = io.StringIO()
+            with self.subTest(target=target), contextlib.redirect_stdout(output):
+                self.assertEqual(main(["--chunks", "1", "--target-version", target]), 2)
+            self.assertIn("error:", output.getvalue())
+
 if __name__=="__main__": unittest.main()

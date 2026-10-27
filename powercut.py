@@ -10,6 +10,10 @@ MAX_CHUNKS = 100000
 class UpdateStore:
     def __init__(self):
         self.active="v1"; self.staged=None; self.journal=[]
+        # Keep committed identities separate from the active pointer so an
+        # explicitly requested target cannot replay an older image after a
+        # later release became active.
+        self.committed_versions={self.active}
     @staticmethod
     def _next_version(active, committed_updates=0):
         match = re.match(r"^v(\d+)$", active)
@@ -40,12 +44,14 @@ class UpdateStore:
         if (not isinstance(target_version, str) or not target_version.strip()
                 or target_version == self.active):
             raise ValueError("target_version must be a non-empty version different from active")
+        if target_version in self.committed_versions:
+            raise ValueError("target_version was already committed")
         self.staged=target_version; self.journal.append("stage")
         for index in range(chunks):
             self.journal.append("write:%d"%index)
             if cut_after is not None and index+1==cut_after:
                 return {"power_cut":True,"active":self.recover()["active"],"journal":list(self.journal)}
-        self.journal.append("commit"); self.active=self.staged; self.staged=None
+        self.journal.append("commit"); self.active=self.staged; self.committed_versions.add(self.active); self.staged=None
         return {"power_cut":False,"active":self.active,"journal":list(self.journal)}
     def recover(self):
         # A commit from an earlier update must not make a later, interrupted
@@ -61,6 +67,7 @@ class UpdateStore:
             # written but before the active pointer is switched.  Finish the
             # activation during recovery instead of silently running v1.
             self.active = self.staged
+            self.committed_versions.add(self.active)
             self.staged = None
         elif not committed:
             self.staged=None
@@ -73,5 +80,13 @@ def main(argv=None):
     if a.chunks < 1 or a.chunks > MAX_CHUNKS:
         p.error("chunks must be between 1 and %d" % MAX_CHUNKS)
     if a.cut_after is not None and not 1<=a.cut_after<=a.chunks: p.error("cut-after must be within chunks")
-    print(json.dumps(simulate(a.chunks,a.cut_after,a.target_version),indent=2)); return 0
+    try:
+        result=simulate(a.chunks,a.cut_after,a.target_version)
+    except ValueError as exc:
+        # Target-version and transaction validation errors are expected input
+        # failures.  Report them through the CLI contract instead of leaking
+        # a traceback from the simulator.
+        print("error: "+str(exc))
+        return 2
+    print(json.dumps(result,indent=2)); return 0
 if __name__=="__main__": raise SystemExit(main())
