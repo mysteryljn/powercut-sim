@@ -1,5 +1,5 @@
 import unittest
-from powercut import UpdateStore, simulate
+from powercut import MAX_CHUNKS, UpdateStore, simulate
 class PowerCutTests(unittest.TestCase):
     def test_cut_keeps_previous_active(self):
         result=simulate(4,2)
@@ -41,10 +41,28 @@ class PowerCutTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             simulate(0)
 
+    def test_oversized_update_is_rejected(self):
+        # A caller-controlled chunk count must not permit unbounded journal
+        # growth and CPU use.
+        with self.assertRaises(ValueError):
+            simulate(MAX_CHUNKS + 1)
+
     def test_repeated_updates_advance_version(self):
         store = UpdateStore()
         self.assertEqual(store.update(2)["active"], "v2")
         self.assertEqual(store.update(2)["active"], "v3")
+
+    def test_auto_version_does_not_reuse_after_custom_release(self):
+        store = UpdateStore()
+        self.assertEqual(store.update(1)["active"], "v2")
+        self.assertEqual(
+            store.update(1, target_version="release-2026.10")["active"],
+            "release-2026.10",
+        )
+
+        # The old generator fell back to v2 for a non-vN active label,
+        # reactivating an already committed image on the next update.
+        self.assertEqual(store.update(1)["active"], "v4")
 
     def test_target_version_can_be_selected(self):
         store = UpdateStore()
