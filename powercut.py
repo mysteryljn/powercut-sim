@@ -15,17 +15,15 @@ class UpdateStore:
         # later release became active.
         self.committed_versions={self.active}
     @staticmethod
-    def _next_version(active, committed_updates=0):
-        match = re.match(r"^v(\d+)$", active)
-        # A custom release label may be active after one or more committed
-        # updates.  Falling back to v2 in that state can reuse an older
-        # automatically generated version (for example v1 -> v2 -> release
-        # -> v2), which makes a later update indistinguishable from a stale
-        # image.  Keep the generated sequence ahead of both the active
-        # numeric version and the number of committed transactions.
+    def _next_version(active, committed_updates=0, committed_versions=()):
+        # Custom labels and explicitly selected numeric versions can hide a
+        # higher number in committed history.  Keep automatic versions above
+        # that history as well as the existing transaction-count baseline.
         next_number = committed_updates + 2
-        if match:
-            next_number = max(next_number, int(match.group(1)) + 1)
+        for version in set(committed_versions) | {active}:
+            match = re.match(r"^v(\d+)$", version)
+            if match:
+                next_number = max(next_number, int(match.group(1)) + 1)
         return "v%d" % next_number
     def update(self,chunks,cut_after=None,target_version=None):
         if not isinstance(chunks, int) or isinstance(chunks, bool) or chunks < 1:
@@ -37,15 +35,24 @@ class UpdateStore:
             or not 1 <= cut_after <= chunks
         ):
             raise ValueError("cut_after must be within chunks")
+        # Validate against the state recovery will activate, without changing
+        # the pending transaction if the new request turns out to be invalid.
+        recovered_active = self.active
+        if self.staged is not None and self._has_committed_stage():
+            recovered_active = self.staged
+        recovered_versions = self.committed_versions | {recovered_active}
         if target_version is None:
             target_version = self._next_version(
-                self.active, self.journal.count("commit")
+                recovered_active, self.journal.count("commit"), recovered_versions
             )
         if (not isinstance(target_version, str) or not target_version.strip()
-                or target_version == self.active):
+                or target_version == recovered_active):
             raise ValueError("target_version must be a non-empty version different from active")
-        if target_version in self.committed_versions:
+        if target_version in recovered_versions:
             raise ValueError("target_version was already committed")
+        # A durable commit must be activated before staged is reused.  A cut
+        # in the new update must retain that committed version and its history.
+        self.recover()
         self.staged=target_version; self.journal.append("stage")
         for index in range(chunks):
             self.journal.append("write:%d"%index)
@@ -53,15 +60,17 @@ class UpdateStore:
                 return {"power_cut":True,"active":self.recover()["active"],"journal":list(self.journal)}
         self.journal.append("commit"); self.active=self.staged; self.committed_versions.add(self.active); self.staged=None
         return {"power_cut":False,"active":self.active,"journal":list(self.journal)}
-    def recover(self):
+    def _has_committed_stage(self):
         # A commit from an earlier update must not make a later, interrupted
         # transaction look committed.  Only a commit after the most recent
         # stage belongs to the currently recoverable transaction.
         last_stage = next((index for index in range(len(self.journal) - 1, -1, -1)
                            if self.journal[index] == "stage"), None)
-        committed = last_stage is not None and any(
+        return last_stage is not None and any(
             entry == "commit" for entry in self.journal[last_stage + 1:]
         )
+    def recover(self):
+        committed = self._has_committed_stage()
         if committed and self.staged is not None:
             # A power loss can happen after the durable commit marker is
             # written but before the active pointer is switched.  Finish the
