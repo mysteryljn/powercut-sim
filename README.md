@@ -17,3 +17,7 @@ make the in-memory journal grow without bound.
 ## ???
 
 MIT
+
+## Archived
+
+This repository is archived and no longer receives feature development. See the maintained replacement [firmware-image-check](https://github.com/mysteryljn/firmware-image-check) for the active workflow. The source history remains available for reference.
